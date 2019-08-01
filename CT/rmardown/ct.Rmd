@@ -1,0 +1,952 @@
+---
+title             : "Designing a Multilingual Copy Task to Measure Typing and Motor Skills in Writing Research"
+shorttitle             : "Designing a multilingual copy task"
+
+author: 
+  - name          : "Luuk Van Waes"
+    affiliation  : "1"
+    corresponding : yes
+    address       : "Prinsstraat 13, 2000 Antwerp, Belgium"
+    email         : "luuk.vanwaes@uantwerpen.be"
+#    ORCID          : "0 000-0002-3642-9533"
+  - name          : "Mariëlle Leijten"
+    affiliation   : "1"
+  - name          : "Jens Roeser"
+    affiliation   : "2"
+#    address       : "50 Shakespeare St, Nottingham NG1 4FQ"
+#    corresponding : no    # Define only one corresponding author
+#    email         : "jens.roeser@ntu.ac.uk"
+  - name          : "Thierry Olive"
+    affiliation   : "3"
+  - name          : "Joachim Grabowski"
+    affiliation   : "4"
+
+
+affiliation:
+  - id            : "1"
+    institution   : "Department of Management, University of Antwerp, Belgium"
+  - id            : "2"
+    institution   : "Department of Psychology, Nottingham Trent University, United Kingdom"
+  - id            : "3"
+    institution   : "Research Centre on Cognition and Learning (CeRCA), CNRS, University of Poitiers, France"
+  - id            : "4"
+    institution   : "Institute for Psychology, Leibniz University Hanover, Germany"
+
+bibliography      : ["ref.bib"]
+
+class             : "man"
+#class             : "doc"
+output            :
+  papaja::apa6_pdf:
+      includes:
+        after_body: 
+          - "appendix.tex"
+
+  
+#output:
+  word_document: papaja::apa6_word
+#    - reference_docx: template.docx
+#  pdf_document: papaja::apa6_pdf
+#  html_document:
+#    df_print: paged
+  
+figsintext        : yes
+figurelist        : no
+tablelist         : no
+footnotelist      : no
+lineno            : no
+mask              : no
+header-includes:
+  - \usepackage{booktabs}
+  - \usepackage{longtable}
+  - \usepackage{array}
+  - \usepackage{multirow}
+  - \usepackage{wrapfig}
+  - \usepackage{float}
+  - \usepackage{colortbl}
+  - \usepackage{pdflscape}
+  - \usepackage{tabu}
+  - \usepackage{threeparttable}
+  - \usepackage[normalem]{ulem}
+  - \usepackage[utf8]{inputenc}
+  - \newcommand{\beginsupplement}{\setcounter{table}{3}  \renewcommand{\thetable}{S\arabic{table}} \setcounter{figure}{0} \renewcommand{\thefigure}{S\arabic{figure}}}
+
+---
+
+
+```{r load_packages, include=FALSE, message=FALSE}
+source("../functions/functions.R")
+library(plyr)
+library(magrittr)
+library(stringr)
+options(kableExtra.auto_format = FALSE)
+library(kableExtra)
+library(tidyverse)
+library(gridExtra)
+library(knitr)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+library(rethinking)
+library(rstan)
+library(lme4)
+library(grid)
+library(rmdfiltr)
+library(viridis)
+library(gtable)
+library(papaja)
+ctc <- c("Tapping", "Sentence", "HF bigrams", "LF bigrams", "Consonants")
+dev.args = list(pdf = list(type = "cairo"))
+knitr::opts_chunk$set(dev = "cairo_pdf")
+```
+
+
+```{r render_appendix, include=FALSE}
+render_appendix("appendix.Rmd")
+```
+
+
+
+
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+# Load df
+d.full <- read_csv("../data/ct.csv") 
+d.full %>% count(iki = IKI <= 0) %>% mutate(prop = 100 * n / sum(n)) -> trim.iki
+trim.na <- trim.iki[is.na(trim.iki$iki),]$prop
+trim.small <- trim.iki[trim.iki$iki & !is.na(trim.iki$iki),]$prop
+d.full %>% count(iki = target == 1) %>% 
+  mutate(prop = 100 * n / sum(n)) %>% 
+  filter(iki == FALSE) -> trim.target
+
+d.aggr <- d.full %>% 
+  filter(IKI > 0 
+                ,!is.na(IKI)
+                ,target == 1
+  ) %>%
+  mutate(subj = as.numeric(factor(subj))) %>%
+  group_by( subj, bigram, component ) %>%
+  dplyr::summarise(IKI = mean(IKI),
+                   N = n()) %>%
+  ungroup() %>%
+  mutate(component = factor(component, levels = c("Tapping", "Sentence", "HF", "LF", "Consonants"), ordered = TRUE))
+
+d.full %>% select(subj, age) %>% unique() -> d.age
+d.full %>% select(subj, sex) %>% unique() -> d.sex
+
+
+d.full %>% group_by(logfile) %>%
+  summarise(n_ikis= n()) %>%
+  ungroup() %>%
+  summarise(M= mean(n_ikis),
+            SD= sd(n_ikis)) -> d.IKIS
+
+d.full %>% 
+  select(subj, age) %>%
+  unique() %>%
+  summarise(Y23 = 100*mean(age <= 23, na.rm =T)) -> Y23
+
+d.full %>% group_by(subj) %>% 
+  summarise(corr = 100*mean(target)) %>%
+  ungroup() %>%
+  summarise(M = median(corr), 
+            iqr = IQR(corr)) -> corr
+
+d.full %>% group_by(component) %>% 
+  summarise(corr = 100*mean(target)) %>%
+  ungroup() %>%
+  summarise(min = min(corr), 
+            max = max(corr)) -> corr2
+
+set.seed(123)
+d <- d.aggr %>% filter(subj %in% sample(1:max(subj), 500)) %>%
+  mutate(subj = as.numeric(factor(subj))) 
+
+```
+
+
+
+# Method
+
+As part of a series of research studies using keystroke logging, we collected a corpus of `r printnum(length(unique(d.full$logfile)))` Dutch copy tasks. Based on this corpus, we will first present some general information to characterize this data set. Second, we will present a Bayesian analysis of inter-keystroke intervals using mixed effects and mixture models that aims at characterizing the distributions of the copy-task components and their differences between all copy-task components, how random effects may be used as a diagnositc tool and additionally the test-retest reliability of the copy-task components.
+
+
+## Participants
+
+For the present analysis we used the Dutch corpus of copy-task data. The data were collected from `r printnum(length(unique(d.sex$subj)))` participants (`r printnum(nrow(d.sex[!is.na(d.sex$sex) & d.sex$sex == "f",]))` females, `r printnum(nrow(d.sex[!is.na(d.sex$sex) & d.sex$sex == "m",]))` males, `r printnum(nrow(d.sex[is.na(d.sex$sex),]))` unknowns) aged between `r printnum(min(d.age$age, na.rm = T))` and `r printnum(max(d.age$age, na.rm = T))` years old (median=`r printnum(as.integer(median(d.age$age, na.rm = T)))` years; $SD$=`r printnum(round(sd(d.age$age, na.rm =T),2))`) in the context of various research projects, research courses and training schools. As most of these studies took place at secondary schools or universities this explains why age groups are not equally represented: `r printnum(Y23$Y23)`% of the participants are 23 or younger. 
+
+The distribution of participants' age and their inter-keystroke intervals can be found in Figure \ref{fig:age}. This distribution is illustrated in different colours for each copy-task component illustrating the relationship between copy-task components and age. For each component we observe a nonlinear positive relationship between age and keystroke latencies [@bosman1993age; @van2017typing]. From handwriting research we know that automaticity is reached at about the age of fifteen [for an overview see, for instance, @graham1997executive; @graham2000role; @medwell2014handwriting]. Our data shows that typing performance is the fastest between 21 and 30. From the age of 30 onward typing skills seem to gradually decrease. At the age of 50 participants are on average slower than the 20 year olds. But even in the latter age group it is important to notice that typing skills might differ considerably. Interestingly, this graph suggests different functions for lexical compared to non-lexical tasks. Lexical tasks show an early speed-up that is not seen in the non-lexical tasks for this age range.
+
+
+
+
+```{r warning = FALSE, fig.pos="!h", fig.width=6.5, fig.height=4, fig.align = "center", fig.cap="\\label{fig:age}Distirbution of age groups and the relationship between age and inter-keystroke intervals (IKIs). For visuallisation data were aggregated on participant-level and IKIs were capped at 3,500 msecs. Lexical tasks were indicated by solid lines and non-lexical tasks were displayed with dashed lines. Both axes are log-scale."}
+
+d.full %>% 
+    dplyr::filter(IKI > 0 
+                  ,!is.na(IKI)
+                  ,target == 1
+    ) %>%
+    mutate(subj = as.numeric(factor(subj))) %>%
+    group_by( subj, component, age ) %>%
+    dplyr::summarise(IKI = mean(IKI),
+                     N = n()) %>%
+    ungroup() %>%
+    mutate(component = mapvalues(component, from  = c("Tapping", "Sentence", "HF", "LF", "Consonants"), to = ctc)) %>%
+    mutate(component = factor(component, levels = ctc, ordered = TRUE)) %>%
+    filter(!is.na(age)) %>%
+    ggplot(aes(y=IKI, x=age, color = component, linetype = component)) +
+    scale_x_continuous(trans='log10', breaks = seq(10, 80, 10), limits = c(13, 83)) +
+  scale_y_continuous(trans='log10', breaks = seq(0, 4000, 500), limits = c(50, 3500)) +
+  geom_jitter(size = .35, width = .1, alpha = .1) +
+  theme_minimal() +
+  scale_color_hue(name = "Copy-task\ncomponent: ", c =40, l = 30) +
+  scale_linetype_manual("Copy-task\ncomponent: ", values = c("dashed", "solid", "solid", "solid", "dashed") ) +
+  labs(y = "IKI in msecs",
+      x = "Age in years"
+      ) +
+  stat_smooth(aes(x = age, y = IKI), method = "lm", formula = y ~ poly(x,2),  se = F, size = .5) +
+  theme(legend.key=element_blank(),
+        legend.position= "right", 
+        legend.justification = "top",
+        legend.background = element_rect(fill = "transparent", colour = "transparent"),
+        legend.key.width=unit(1,"cm"),
+        legend.key.height = unit(1,"cm"))
+
+```
+
+
+
+## Materials
+
+
+The copy-task corpus contains currently `r printnum(nrow(d.full))` inter-keystroke intervals (per logfile: $M$=`r printnum(d.IKIS$M)`; $SD$=`r printnum(d.IKIS$SD)`) characterized by a set of variables: inter-keystroke interval (IKI) transition time (in msecs), copy-task component and trial in which they were produced as well as frequency characteristics, hand combination needed to produce the bigram, adjacency and repetition. The data are available in both an XML and a CSV-output file using the Inputlog 8 copy task analysis. The XML file contains aggregated analyses at the logfile level offering different perspectives to the copy task data (e.g. frequency, hand combinations, repetition, adjacency) at different levels  (e.g. global, targeted bigrams, component and trial level). Moreover, time and trial filters are also applied and apart from means, medians and standard deviations. Also geometric means and confidence intervals are presented. The CSV file is a non-aggregated output containing a full list of bigrams typed enriched with information about the component (and trial) in which they were composed, their IKI duration, and characteristics (see perspectives above). 
+
+$R$-scripts and datasets are available on Github (URL) and can be used for reproducing and extending the presented analysis for further investigation involving the copy-task data.
+
+## Data analysis
+
+The aim of this analysis is to provide estimates of the distribution parameters underlying each copy-task component. This is achieved in two ways: First, we determined inferential estimates of the population parameters, the mean $\mu$ and the variance $\sigma^2$, of each copy-task component. Second, we estimated probability distributions of the differences between the inter-keystroke intervals of all copy-task components. Third, we extended this analysis to evaluate typing performance of individual typists and the test-retest reliability of the copy-task.
+
+The inter-keystroke intervals, the duration between two consecutive keystrokes, were analysed in Bayesian linear mixed effects models [see e.g. @gel07; @gelman2014; @kruschke2014doing; @lambert2018student; @mcelreath2016statistical], using the probabilistic programming language Stan [@carpenter2016stan; @rstan; @rstan2; @hoffman2014no]. This approach provides and adequate framework to handle unequal variance and unequal numbers of observations [@quene2008examples; @quene2004multi; @van2010reading]. The Bayesian framework used in this analysis provides statistically inferred (i.e. posterior) quantities that have a fundamentally different theoretical interpretation than frequentist quantifies [see for detailed discussions @kruschke2014doing; @lambert2018student; @mcelreath2016statistical; @nicenboim2016statistical].^[A frequentist analysis using and the $R$ package lme4 [@bates2015] for linear mixed effects models and a comparison to Bayesian linear mixed effects model can be found in Appendix \ref{comparing-bayesian-and-frequentist-models}.] 
+
+
+The Bayesian linear mixed effects model was extended to a mixture model [@farrell2018computational; @gelman2014; @vasishth2017]. This extension was used to map the data to the assumed underlying cognitive process that generates these data. As highlighted in the introduction of this paper, keystroke data as well as many other lower-level tasks are a combination of different cognitive processes which cascade from higher into lower levels of representation. Mixture models assume that the underlying data generating process is a combination of Gaussians (i.e. normal distributions). In contrast, statistical methods such as analysis of variance (ANOVA) and $t$-tests but also linear regression models assume the data to come from a single underlying normal distribution. While regression models estimate one population mean $\mu$ and variance $\sigma^2$ from the data, a mixture model with two mixture components would estimate $\mu$ and $\sigma^2$ for two component involved in the underlying data generating process. This is achieved by introducing an additional (latent) model parameter -- the mixing proportions $\theta$ -- which captures the probability to which data are attributed to either distribution. 
+
+
+This analysis focuses specifically on providing a model that is capable of accounting for the mixture of cognitive processes involved in copy-typing. Inter-keystroke intervals may reflect processes on various levels of encoding. For example, @baaijen2012keystroke used a mixture model approach to analyse pauses in text writing and found a combination of three Gaussians with a mixing proportion of .65 with a mean pause duration of 330 msecs which the attributed to for word retrieval, a proportion of .26 around 735 msecs for phrase boundaries, and .09 for higher level processes (e.g. planning, reflection) with a mean pause durations of 2697 msecs. In other words pausing in text writing is a combination of three processes that are represented in 65%, 26% and 9% in the data, respectively. Copy-typing in our example is similar to the extent that it involves a mixture of cognitive processes. For example, copy-typists need to visually encode the target string, buffer its representation in memory, activate the relevant motor code, execute the keystrokes and update the memory representation of the target string. This may or may not involve revision and linguistic processing.
+
+
+The advantages of Bayesian data analysis for hypothesis testing are well documented in the literature [@dienes2014using; @kruschke2012time; @kruschke2014doing; @kruschke2018bayesian; @nicenboim2016statistical; @sorensen2015bayesian]. An attractive properties of Bayesian statistics is the fact that the posterior / inferred quantities are associated with a probability distribution. In other words, Bayesian inference allows us to determine the most probable value indicating the difference between two copy-task components and the probability range round this value. The former estimate is called the \textit{maximum a posteriori}, the most probable parameter estimate. Along with this estimate we can determine the shortest interval containing 95% of the posterior probability mass. This interval is called the 95% Highest Posterior Density Interval (HPDI). Bayesian HPDIs, probability, percentile intervals, and credible intervals provide a probability range in which the true parameter value lies with the highest certainty. HPDIs are typically used for non-symmetric posteriors [@hyndman1996computing;@liu2015simulation], for example, bimodal or skewed posterior distributions. Although frequentist confidence intervals are often mistake to have similar properties, frequentist quantities do generally not provide any probability information about the inferred parameter value [see @hoekstra2014robust;@morey2015Fallacy] (for more details see Appendix \ref{comparing-bayesian-and-frequentist-models}).
+
+
+All reported models include random intercepts for participants and bigrams to account for individual differences between both participants' typing ability and differences between individual bigrams (e.g. frequency, hand combination, adjacency). To avoid over-parametrisation of the models [see @baa08;@bates2015parsimonious] we did not include random by-participants slopes for copy-task components, unless stated differently.^[All models were fitted with weakly informative regulating priors [see @lambert2018student]. 6,000 iterations (3,000 warm-up) were run for 3 Markov chain Monte Carlo chains. Model convergence was tested via the Rubin-Gelman statistic [@gelman1992], traceplots and cross-validation [@vehtari2015pareto; @vehtari2017practical].]
+
+
+## Data preprocessing 
+
+For this analysis, the keystroke data were minimally trimmed. Missing data (`r printnum(trim.na)`%) and inter-keystroke intervals equal to zero (`r printnum(trim.small)`%) were removed as well as non-targeted bigrams (`r printnum(trim.target$prop)`%).^[The rationale for this decision can be found in Appendix \ref{data-trimming}] The overall median score for correctly typed bigrams was `r printnum(corr$M)`% ($IQR$=`r printnum(corr$iqr)`), and varied between a minimum of `r printnum(corr2$min)`% and a maximum of `r printnum(as.integer(corr2$max))`% across copy-task components. 
+
+
+For the following analysis data were aggregated across repetitions rendering one inter-keystroke interval per letter combination (i.e. bigram) per participant. The analysis was performed on a random subset of 500 participants.
+
+
+# Results
+
+
+```{r}
+blmm <- readRDS("../stanout/posterior/LMM_posterior.rda")
+blmm_summary <- blmm %>% as_tibble() %>%
+  gather(Parameter, value) %>%
+  group_by(Parameter) %>%
+  dplyr::summarise(mean = mean(value),
+                   map = dmode(value),
+                   SE = sd(value),
+                   l.hpdi = HPDI(value, prob = .95)[1],
+                   u.hpdi = HPDI(value, prob = .95)[2]
+ #                  l.pi = PI(value, prob = .95 )[1]
+  #                 ,u.pi = PI(value, prob = .95)[2]
+                   ) %>%
+  mutate(mean = exp(mean),
+         map = exp(map),
+         SE = exp(SE),
+         l.hpdi = exp(l.hpdi),
+         u.hpdi = exp(u.hpdi)
+         #,l.pi = exp(l.pi)
+         #,u.pi = exp(u.pi)
+         ) %>%
+  filter(Parameter != "sigma")
+
+blmm_summary$Parameter <- ctc
+blmm_summary$model <- "BLMM"
+
+mc <- blmm_summary %>% select(-mean) %>%
+  dplyr::rename(Estimate = map,
+                l.ci = l.hpdi,
+                u.ci = u.hpdi) %>%
+  group_by(Parameter, model) %>%
+  summarise_all(~round(.,2)) %>%
+  ungroup() 
+
+
+```
+
+
+
+## Mixture models of inter-keystroke intervals
+
+Figure \ref{fig:descr} shows boxplots of the inter-keystroke intervals with the individual data as jittered dots. The distributions show both the central tendency and dispersion of the data. More difficult tasks appear to be associated with longer inter-keystroke intervals. The non-lexical tasks demarcate the limits of the inter-keystroke interval. The purely motoric tapping component shows very short keystrokes and the Consonant task involving memory storage and eye-hand coordination shows particularly long keystroke intervals. The lexical components show a clear difference between the LF bigram task on the one side and the HF bigrams and Sentence task on the other side.
+
+```{r warning = FALSE, fig2, fig.pos="!h", fig.width=6.5, fig.height=4.5, fig.align = "center", fig.cap="\\label{fig:descr}Boxplots of the inter-keystroke intervals (IKI) for each copy-task component of the full copy-task corpus. For visualisation, the data were capped at 3,500 msecs and shown on a log scale."}
+anno <- data.frame(x1 = c(1, 2), x2 = c(5, 4), 
+                   y1 = c(2800, 1700), y2 = c(3500, 2200), 
+                   xstar = c(3, 3), ystar = c(3501, 2700),
+                   lab = c("Non-lexical", "Lexical"))
+
+d.aggr %>% 
+    mutate(component = mapvalues(component, from = levels(component), to = ctc),
+           component = factor(component, levels = ctc, ordered = T)) %>%
+    ggplot(aes(y = IKI, x = component)) +
+    geom_jitter(size = .01, width = .25, alpha = .05) +
+    geom_boxplot(outlier.color = "transparent", width = .5, varwidth = F, size = .15) +
+  #  geom_density( aes(y=..density..), fill = "grey50", color = "transparent" ) +
+    labs(x = "",
+         y = "IKI in msecs") + 
+    theme_minimal() +
+  scale_y_continuous(trans = "log10", 
+                     breaks = c(0, 50, 125, 250, 500, 1000, 1500, 2000, 2500, 3000, 3500), 
+                     limits = c(50, 3500)) +
+  geom_text(data = anno, aes(x = xstar,  y = ystar, label = lab), size = 4.5, parse = T) +
+  geom_text(data = anno, aes(x = xstar,  y = ystar, label = lab), size = 4.5, parse = T) +
+  geom_text(data = anno, aes(x = xstar,  y = ystar, label = lab), size = 4.5, parse = T) +
+  geom_text(data = anno, aes(x = xstar,  y = ystar, label = lab), size = 4.5, parse = T) +
+  geom_text(data = anno, aes(x = xstar,  y = ystar, label = lab), size = 4.5, parse = T) +
+  geom_segment(data = anno, aes(x = x1, xend = x1, 
+           y = c(y1[1]-2000, y1[2]-500), yend = y2),
+           colour = "black",size = .75) +
+  geom_segment(data = anno, aes(x = x2, xend = x2, 
+           y = y1, yend = y2),
+           colour = "black",size = .75) +
+  geom_segment(data = anno, aes(x = x1, xend = x2, 
+           y = y2, yend = y2),
+           colour = "black",size =  .75) +
+  ggtitle("Non-lexical") +
+  theme(plot.title = element_text(size = 12, hjust = .5, vjust = -2, face = "bold"),
+        panel.grid.minor = element_blank()) 
+
+```
+
+In addition to the differences between components shown in Figure \ref{fig:descr}, there are clear differences in the variance between the components. In particular the Consonant task shows a wide dispersion. The dark area around the boxplots for the Sentence and HF bigram task illustrates a dense distribution of the inter-keystroke intervals around a centre. While most components seem to be associated with a specific variance, the sentence copying task and the HF bigram task show similar distributions. In other words, the variance of the majority of copy-task components is unequal (i.e. heteroscedasticiy).
+
+Linear mixed effects models (as well as ANOVAs and $t$-tests) assumed equality of variance (i.e. homoscedasticity) between the different conditions. In other words, the variance of each copy-task component should be approximately the same. We compared the fit of 5 Bayesian models to (1) fit the data of the copy-task components, (2) evaluate the equality of variance and (3) test whether the data in each component arise from a mixture of normal distributions.
+
+First we fitted a linear mixed effects model with an intercept term only (a null model). This model was compared to a model with copy-task component as fixed effect. A comparison of these two models allows us to determine the predictive power of copy-task component. The heteroscedasticity assumption as implemented in a linear mixed effects model that assumes that each copy-task component has its own population mean $\mu$ and its own variance parameter $\sigma^2$. This assumption was carried over into the mixture models. Mixture models were fitted with two and three underlying components. The mixture models with two underlying distributions constrained such that the distribution with the larger centre (mean) has a larger variance. The reason for this was that it is well know that larger values are associated with a larger variances for both response-time data in particular [@wagenmakers2007linear] and human motor bahaviour in general [@wing1973response;@schoner2002timing]. A last model was fitted with three mixture components of which the new additional component was constrained to capture extremely short inter-keystroke intervals.
+
+To compare the fit of the different models we used leave-one-out cross-validation which allows to test the predictive ability of models and penalizes models with more parameters [see @farrell2018computational;@mcelreath2016statistical; @lambert2018student; @lee2014bayesian]. We determined this out-of-sample predictive performance via Pareto smoothed importance-sampling leave-one-out cross-validation (PSIS-LOO) [@vehtari2015pareto; @vehtari2017practical]. This predictive performance was estimated as the sum of the expected log pointwise predictive density ($\widehat{elpd}$) and can be found in Table \ref{tab:fit}. A higher $\widehat{elpd}$ indicates better predictive performance. The difference between the predictive quality of the best fitting model compared to the remaining models was expressed as $\Delta\widehat{elpd}$. A negative difference $\Delta\widehat{elpd}$ indicates that the predictive performance of a model is lower compared to the best fitting model. 
+
+
+```{r}
+elpd_mog <- read_csv("../stanout/loo_results_mog.csv") %>% 
+  group_by(model) %>% 
+  dplyr::summarise_all(~round(.,2)) %>% 
+  arrange(desc(elpd_loo)) %>%
+  select(-se_elpd_loo)
+elpds <- elpd_mog
+colnames(elpds) <- c("M", "diff", "se", "elpd")
+colnames(elpd_mog) <- c("Model", "$\\Delta\\widehat{elpd}$" ,"SE", "$\\widehat{elpd}$") 
+elpd_mog$Model <- c("MoG (\\textit{K}=3)", "MoG (\\textit{K}=2)", "BLMM (unequal variance)", "BLMM (equal variance)", "BLMM (intercept-only)")
+
+elpd_mog %>% knitr::kable( align = c("l", "r", "r", "r") 
+                , escape = F
+                , booktabs = T
+                , caption = "\\label{tab:fit}Predictive performance of five Bayesian models, three Bayesian linear mixed effects models (BLMM) and two Mixture of Gaussians (MoG) models with \\textit{K} mixture components. $\\widehat{elpd}$ is the expected log pointwise predictive density. The model fit was ordered starting with the model with the highest predictive performance on the top. Differences in model fit $\\Delta\\widehat{elpd}$ (\\textit{SE}=standard error) are shown with reference to the model with the highest predictive performance.") %>%
+#  footnote(general = " ",footnote_as_chunk = T, escape = T) %>%
+  kable_styling(full_width = T, font_size = 11)  %>%
+  column_spec(1, width = "4.5cm") %>%
+  column_spec(2:5, width = "2cm") 
+
+
+```
+
+Both mixture models showed a higher predictive performance than the linear mixed effects models with an increase in predictive performance of around $\Delta\widehat{elpd}$=1,000 compared to the best fitting linear mixed effects model. Adding an additional mixture component to the mixture model with three mixture components renders a comparably negligible gain ($\Delta\widehat{elpd}=$`r printnum(elpds$diff[2])`, \textit{SE}=`r printnum(elpds$se[2])`). Therefore, we will use use the model with two mixture components for inference. The Bayesian linear mixed effects model with unequal variance for each copy-task component rendered a higher predictive performance compared to the equal variance standard linear mixed effects models. The lowest predictive performance was observed for the intercept-only model. Including copy-task component as model parameter improved the predictive performance of the model. Allowing varying variance parameters increases the predictive performance of the models as well as the addition of mixture components. 
+
+
+The parameter estimates for each copy-task component are summarised in Table \ref{tab:musum}. 
+The most probable parameter estimate (i.e. \textit{maximum a posteriori} [MAP]) and 95% HPDIs for each copy-task component. $\hat{\mu}$ indicates the distribution of probable parameter values for each component. Values are shown for each each mixture component. 
+
+```{r}
+# Model
+readRDS(file="../stanout/posterior/MoGK2_posterior.rda") %>% 
+  gather(Parameter, value) %>% 
+  filter(!(Parameter %in% c(paste0("delta[",1:5,"]"),
+                            paste0("sigma_diff[",1:5,"]"),
+                            paste0("sigma[",1:5,"]")))) %>%
+  separate(Parameter, into = c("Parameter", "pmix"), sep = "[,]") %>%
+  mutate(Parameter = gsub(pattern = "_", ".", Parameter),
+         Parameter= gsub(pattern = "]", replacement = "", Parameter),
+         Parameter= gsub(pattern = "\\[", replacement = "_", Parameter),
+         pmix = ifelse(is.na(pmix), "", pmix),
+         pmix = gsub(pattern = "]", replacement = "", pmix)) %>%
+  separate(Parameter, into = c("Parameter", "Component"), sep = "_") %>%
+  mutate(Parameter = paste0(Parameter, pmix), 
+         Parameter = ifelse(Parameter == "beta", "beta1", 
+                            ifelse(Parameter == "sigma.e", "sigma1",
+                                   ifelse(Parameter == "sigmap.e", "sigma2", Parameter)))) %>%
+  select(-pmix) %>%
+  group_by(Parameter, Component) %>%
+  dplyr::summarise_all(list(map = dmode, 
+                     l.hpdi = ~HPDI(., prob = .95)[1], 
+                     u.hpdi = ~HPDI(., prob = .95)[2])) %>%
+  ungroup() -> m.summary
+
+
+m.summary %>%
+  filter(Parameter %in% c("beta1", "beta2", "theta2")) %>%
+  mutate(K = substr(Parameter, start = nchar(Parameter), stop = nchar(Parameter)),
+         Parameter = substr(Parameter, start = 1, stop = nchar(Parameter)-1),
+         map = ifelse(Parameter %in% c("beta", "sigma"), exp(map), map),
+         l.hpdi = ifelse(Parameter %in% c("beta", "sigma"), exp(l.hpdi), l.hpdi),
+         u.hpdi = ifelse(Parameter %in% c("beta", "sigma"), exp(u.hpdi), u.hpdi),
+         Component = mapvalues(Component, from = 1:5, to = ctc),
+         Component = factor(Component, levels = rev(ctc), ordered = T),
+         Parameter = ifelse(Parameter == "beta", "hat(mu)~'in msecs'", Parameter),
+         K = ifelse(K == 1, "italic(K)[1]", "italic(K)[2]"),
+         Parameter = ifelse(Parameter == "theta", "hat(theta)[2]*'(=1-'*hat(theta)[1]*')'", Parameter)) -> m.summary2
+
+m.summary2 %>% filter(Parameter == "hat(mu)~'in msecs'") %>%
+ # myspread(K, c(l.hpdi, map,  u.hpdi)) %>%
+  select(-Parameter) %>%
+  mutate(Component = factor(Component, levels = (ctc), ordered = T))  %>%
+  arrange(K,Component) %>%
+  mutate(K = mapvalues(K, from = unique(K), to = c("$\\hat{\\mu}_1$", "$\\hat{\\mu}_2$"))) %>%
+  select(K, Component, map, l.hpdi, u.hpdi) -> m.summary3
+colnames(m.summary3)  <- c("Mixture component", "Copy-task component", "MAP", "2.5\\% HPDI", "97.5\\% HPDI")
+
+m.summary3 %>% 
+  knitr::kable( align = c("c", "l", "r", "r","r") 
+                , escape = F
+                , digits = 2
+                , booktabs = T
+                , caption = "\\label{tab:musum}Parameter estimates for each copy-task component. Shown are the \\textit{maximum a posteriori} (MAP), the most probable parameter value, and the lower (2.5\\%) and upper bound (97.5\\%) of the 95\\% HPDI (all in msecs). Values for the mixture component of shorter values are shown in the $\\hat{\\mu}_1$ column, values for the component of longer values are shown in the $\\hat{\\mu}_2$ column."
+) %>%
+  #footnote(general = " ",footnote_as_chunk = T, escape = T) %>%
+  kable_styling(full_width = T, font_size = 11)  %>%
+  column_spec(1, width = "2.5cm") %>%
+  column_spec(2, width = "3cm") %>%
+  column_spec(3:6, width = "2.5cm") %>%
+  collapse_rows(1, latex_hline = "major", valign = "middle")
+ # add_header_above(c(" " = 1, "$\\hat{\\mu}_1$" = 3, "$\\hat{\\mu}_2$" = 3))
+
+```
+
+For a visualisation of Table \ref{tab:musum}, including the mixing proportion see Figure \ref{fig:mog}. The mixing proportion is indicated as $\theta$ which can be understood as the probability of data to be part of a mixture component. This mixing proportion ranges from $>$ 0 to $<$ 1. The mixing proportion of the mixture component \textit{K}$_2$ is indicated as $\hat{\theta_2}$ and indicates the probability of data belonging to the distribution $\hat{\mu_2}$. As the model is constrained to be bimodal, $\hat{\theta_2}$ is equal to $1-\hat{\theta_1}$, where $\theta_1$ is the mixing proportion of the mixture model \textit{K}$_1$.
+
+
+```{r warning = FALSE, fig3, fig.pos="!h", fig.width=6.75, fig.height=4.75, fig.align = "center", fig.cap="\\label{fig:mog}Parameter estimates of the mixture model for each copy-task component. Shown as dots are the most probable parameter estimate and 95\\% HPDIs as error bars. The mixture component is indicates as subscripts. $\\hat\\mu$ indicates the parameter estimates, and $\\hat\\theta_2$ the mixing proportion."}
+my_breaks <- function(x) { if (max(x) < 1) seq(0, 1, .25) else seq(0, 600, 100) }
+
+m.summary2 %>%
+  ggplot(aes(x = Component,
+           y = map,
+           ymin = l.hpdi,
+           ymax = u.hpdi,
+          linetype = K
+)) + theme_linedraw() +
+  geom_errorbar(position = position_dodge(-.75), width = 0, size =.5) +
+  geom_point(position = position_dodge(-.75), size = 2) +
+  facet_wrap(~Parameter, ncol = 1, labeller = labeller(Parameter = label_parsed), scales = "free" ) +
+  scale_linetype_manual("Mixture component:", values = c("solid", "dashed"), labels=function(x) parse(text=x)) +
+#  scale_shape_manual(values = c(21, 19)) +
+  coord_flip() +
+  labs(y = bquote(italic("Maximum a posteriori")~"with 95% HPDIs"), x= "") +
+  theme(panel.grid   = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.key.width = unit(1,"cm"),
+        legend.position = c(.85,.87),
+        legend.background = element_rect(fill = "transparent", colour = "transparent"),
+        strip.text = element_text(face = "bold")) +
+  scale_y_continuous(breaks = my_breaks)
+
+
+
+```
+
+```{r}
+m.summary %>%
+  filter(Parameter %in% c("beta1", "beta2")) %>%
+  mutate(K = substr(Parameter, start = nchar(Parameter), stop = nchar(Parameter)),
+         Parameter = substr(Parameter, start = 1, stop = nchar(Parameter)-1),
+         map = exp(map),
+         l.ci = exp(l.hpdi),
+         u.ci = exp(u.hpdi),
+         Component = mapvalues(Component, from = 1:5, to = ctc),
+         Component = factor(Component, levels = rev(ctc), ordered = T),
+         Parameter = ifelse(Parameter == "beta", "mu", Parameter),
+         model = paste0("MoG",K)
+        # Parameter = paste0("hat(",Parameter, ")[", as.character(K), "]")
+         ) %>%
+  select(-K, -Parameter, -l.hpdi, -u.hpdi) -> mog_sum
+
+m.summary %>%
+    filter(Parameter %in% c("theta2")) %>%
+    mutate(Parameter = substr(Parameter, start = 1, stop = nchar(Parameter)-1)) %>%
+    select(-Parameter) %>%
+    group_by(Component) %>%
+    summarise_all(~round(.,2)) -> theta_summary
+```
+
+
+The mixing proportion $\hat\theta_2$ is relatively small for most components. In other words, the majority of the posterior probability lies in one mixture component. This smaller proportion may be attributed to occasional pausing or possibly slower initial keystrokes. However, for the Consonant task, the mixing proportion of $\hat\theta_2$ is `r printnum(theta_summary$map[5])` (95% HPDI: `r printnum(theta_summary$l.hpdi[5])`, `r printnum(theta_summary$u.hpdi[5])`). Thus `r printnum(as.integer(theta_summary$map[5]*100))`% of the bigram data in the Consonant task are attributed to a distribution of longer keystroke intervals. 
+
+The estimates of the parameter value $\hat\mu$ show two groups; the first comprises the Tapping task, Sentence typing and HF bigrams, the second comprises the LF bigrams and the Consonant task. This applies to both distributions, \textit{K}$_1$ and \textit{K}$_2$. The HPDIs indicate that certainty about the parameter estimate is lower in the Tapping task and the Consonant task than in the remaining three tasks indicating some variability between fast and slow inter-keystroke intervals.
+
+The parameter estimates of the linear mixed model are compared to the parameter estimates of each mixture component in Figure \ref{fig:moglmm}. The mixing proportion $\hat\theta_2$ of $\hat\mu_2$ and their 95% HPDIs are shown on the panel labels. 
+
+
+```{r warning = FALSE, fig4, fig.pos="!h", fig.width=6.75, fig.height=4, fig.align = "center", fig.cap="\\label{fig:moglmm}Comparison of parameter estimates of the Bayesian linear mixed effects model (BLMM) and the mixture model showing the most probable parameter estimate $\\hat\\mu$ with HPDI for both components indicated by subscripts. Parameter estimates are shown for all copy-task components."}
+
+greeks <- list(bquote("BLMM"), bquote("MoG ("*hat(mu)[1]*")"), bquote("MoG ("*hat(mu)[2]*")"))
+
+theta_summary$Component <- ctc
+theta_summary$theta <- theta_summary %$% paste0("atop('",ctc,"',", paste0("hat(theta)[2]*'=", map,"'","~'[", l.hpdi,", ", u.hpdi, "]')" ))
+theta_label <- theta_summary %>% select(Component, theta)
+
+mc %>% 
+  rename(Component = Parameter,
+         map = Estimate) %>%
+  select(-SE) %>%
+  bind_rows(mog_sum) %>%
+  left_join(theta_label) %>%
+  mutate(model = factor(model, levels = unique(model)[c(3,2,1)], ordered = T),
+         theta = factor(theta, levels = theta_label$theta, ordered = T)) %>%
+  ggplot(aes(x=model,
+             linetype =model)) +
+  theme_linedraw() +
+  facet_wrap(~theta, scales = "free_x", labeller = label_parsed) +
+  geom_point(aes(y=map), size = 2) +
+  geom_errorbar(aes(ymin = l.ci, ymax = u.ci), width = 0, size = .5) +
+  labs(y = bquote("Estimate"~hat(mu)~"in msecs with 95% HPDI/CI"),
+       x = "") +
+  coord_flip() +
+  scale_linetype_manual("Model: ", 
+                        values = c("dashed","solid", "solid"),
+                        breaks = c( "BLMM", "MoG1", "MoG2"),
+                        labels = greeks) +
+#  scale_y_continuous(breaks = seq(0,600,100)) +
+  scale_x_discrete(breaks = c("BLMM", "MoG1", "MoG2"), labels=  greeks) +
+  theme(axis.title.y = element_text(angle = 0, hjust = 0),
+        panel.grid = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.key.width = unit(1.5,"cm"),
+        legend.position = "none",
+        legend.justification = "top",
+        legend.background = element_rect(fill = "transparent", colour = "transparent")) 
+```
+
+
+The parameter estimate $\hat\mu_1$ of the mixture model is similar to the estimates of the Bayesian linear mixed effects model in the Tapping task, the Sentence and the HF bigrams task, and the LF bigram task. In the Tapping, Sentence and LF bigram task, $\hat\mu_2$ accounts for occasional slowdowns. In the HF bigrams task, both mixture components are consistent with the parameter estimates of the linear mixed effects models. However, the Sentence typing task and, in particular, the Consonant task show shorter inter-keystroke intervals $\hat\mu_1$ compared to the previous estimates while $\hat\mu_2$ is longer. This indicates that the previous estimates where higher because of a subset of longer values. This pattern was the strongest in the Consonant task in which the two parameter estimates $\hat\mu_1$ and $\hat\mu_2$ are more distinct representing about 30% and 70% of the inter-keystroke intervals, respectively. 
+
+
+The differences between inter-keystroke intervals were assessed in pairwise comparisons between all copy-task components. The most probable difference estimate with 95% HPDI can be found in Figure \ref{fig:comps} with the compared components shown on the left and right side. To comparability the differences are shown for both parameter estimates $\hat\mu$ of the mixture model in the upper panel and the differences in $\hat\theta_2$ can be found in the lower panel. Numbers above the intervals show \textit{P}($\Delta\hat\mu<0$), the probability that the posterior difference between the copy-task components is smaller than zero. Small posterior differences indicate a high probability that there is a difference larger than zero. 
+
+
+```{r warning = FALSE, fig5, fig.pos="!h", fig.width=6.5, fig.height=6, fig.align = "center", fig.cap="\\label{fig:comps}Difference in inter-keystroke intervals between copy-task components shown for mixture components $\\hat\\mu$ and mixing proportion $\\hat{\\theta}_2$ with 95\\% HPDIs. Numbers in the graph shown the posterior probability of the difference being smaller than zero \\textit{P}($\\Delta\\hat\\mu<0$). Values of \\textit{P}($\\Delta\\hat\\mu<0$)<.001 or >.999 were omitted."}
+
+readRDS(file="../stanout/posterior/MoGK2_posterior.rda") %>% 
+  gather(Parameter, value) %>% 
+  filter(Parameter %in% c(paste0("beta[",1:5,"]"), paste0("beta2[",1:5,"]"), paste0("theta[",1:5, ",", 2, "]"))) %>%
+  separate(Parameter, into = c("Parameter", "Comp"), sep = ",") %>%
+  mutate(Comp = gsub(Comp, pattern = "\\]", replacement = "")) %>%
+  mutate(Comp = ifelse(is.na(Comp), "", Comp)) %>%
+  mutate(Parameter= gsub(pattern = "]", replacement = "", Parameter),
+         Parameter= gsub(pattern = "\\[", replacement = "_", Parameter)) %>%
+  separate(Parameter, into = c("Parameter", "Component"), sep = "_") %>%
+  mutate(Parameter = paste0(Parameter, Comp)) %>%
+  filter(Parameter != "theta1") %>%
+  mutate(value = ifelse(Parameter != "theta2", exp(value), value)) %>%
+  group_by(Component) %>%
+  mutate(id = 1:n()) %>%
+  spread(Component, value) %>%
+  select(-id,-Comp) -> mog
+
+colnames(mog) <- c("Parameter", "Tapping", "Sentence", "HF", "LF", "Consonants")
+
+mog %>%
+  mutate(Consonants_LF = Consonants - LF,
+         Consonants_HF = Consonants - HF,
+         Consonants_Sentence = Consonants - Sentence,
+         Consonants_Tapping = Consonants - Tapping,
+         LF_HF = LF - HF,
+         LF_Sentence = LF - Sentence,
+         LF_Tapping = LF - Tapping,
+         HF_Sentence = HF-Sentence,
+         HF_Tapping = HF-Tapping,
+         Sentence_Tapping = Sentence - Tapping) %>%
+  select(-Tapping:-Consonants) %>%
+  group_by(Parameter) %>%
+  dplyr::summarise_all(list(map = dmode, 
+                     l.hpdi = ~HPDI(., prob = .95)[1], 
+                     u.hpdi = ~HPDI(., prob = .95)[2],
+                     p = ~mean(.<0))) %>%  
+  ungroup() %>%
+  mutate(Parameter = ifelse(Parameter == "beta" , "hat(mu)[1]",
+                            ifelse(Parameter == "beta2" , "hat(mu)[2]", "hat(theta)[2]"))) %>%
+  gather(tmp, diff, -Parameter) %>%
+  separate(tmp, into = c("ctc1", "ctc2", "tmp"), sep = "_") %>%
+  group_by(tmp) %>%
+  mutate(id = 1:n()) %>%
+  spread(tmp, diff) %>%
+  mutate(Comparison = paste0(ctc1, "-", ctc2)) %>%
+  select(-ctc1, -ctc2, -id) %>%
+  mutate(p = round(p, 3),
+         Model = ifelse(Parameter == "hat(mu)[1]", "italic(K[1])","italic(K[2])")) -> comparisons
+
+comparisons %<>% separate(Comparison, into = c("ctc1", "ctc2"), sep = "-", remove = F) %>%
+  unite(Comparison2, ctc2, ctc1, sep = "-",  remove = T)
+
+order <- c(2, 1, 7, 3, 8, 5, 4, 9, 6, 10)
+comp_order <- unique(comparisons$Comparison)[order]
+y2 <- c("Consonants", "Consonants", "LF bigrams", "Consonants", "LF bigrams", "HF bigrams", "Consonants", "LF bigrams", "HF bigrams", "Sentence")
+  
+y1 <- c("LF bigrams", "HF bigrams", "HF bigrams", "Sentence", "Sentence", "Sentence", "Tapping", "Tapping", "Tapping" , "Tapping")
+
+greeks <- list(bquote(italic(K)[1]), bquote(italic(K)[2]))
+
+comparisons %>%
+  filter(Parameter != "hat(theta)[2]") %>%
+  #  separate(Comparison, into = c("ctc1", "ctc2"), sep = "-") %>%
+  mutate(p = ifelse(p <= .001 | p >= .999, "", p),
+         Comparison = factor(Comparison, levels = comp_order, ordered = T)) %>%
+  ggplot(aes(y= map,
+             ymin = l.hpdi,
+             ymax = u.hpdi,
+             x = as.numeric(factor(Comparison)),
+             linetype = Model,
+             label =p )) +
+  geom_point(position = position_dodge(-.95), size = 2) +
+  geom_errorbar(width = 0, position = position_dodge(-.95)) +
+  theme_linedraw() +
+  scale_x_continuous(breaks = 1:10, labels = y1, 
+                     sec.axis = sec_axis(~., breaks = 1:10, labels = y2))  +
+  coord_flip() +
+  #  facet_wrap(~Parameter, ncol = 1)+
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey") +
+  labs(y = bquote("Difference"~Delta*hat(mu)~"in msecs with 95% HPDI"), x = "") +
+  # scale_linetype_manual( values = c("solid", "dashed")) +
+  geom_text(vjust = -.75, hjust = 1, size = 3, position = position_dodge(-.95)) +
+  scale_linetype_discrete("Mixture component: ", labels = greeks) +
+  theme(panel.grid = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.justification = "left",
+        legend.position = c(.7,.87),
+        legend.direction = "vertical",
+        legend.background = element_rect(fill = "transparent", colour = "transparent")) -> p_1
+
+comparisons %>%
+  filter(Parameter == "hat(theta)[2]") %>%
+  #  separate(Comparison, into = c("ctc1", "ctc2"), sep = "-") %>%
+  mutate(p = ifelse(p <= 0.001 | p >= .999, "", p),
+         Comparison = factor(Comparison, levels = comp_order, ordered = T)) %>%
+  ggplot(aes(y= map,
+             ymin = l.hpdi,
+             ymax = u.hpdi,
+             x= as.numeric(factor(Comparison)),
+             linetype = Model,
+             label =p )) +
+  geom_point(size = 2) +
+  geom_errorbar(width = 0, linetype = "dashed") +
+  theme_linedraw() +
+  scale_x_continuous(breaks = 1:10, labels = y1,
+                     sec.axis = sec_axis(~., breaks = 1:10, labels =y2))  +
+  coord_flip() +
+  #  facet_wrap(~Parameter, ncol = 1)+
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey") +
+  labs(y = bquote("Difference"~Delta*hat(theta)[2]~"with 95% HPDI"), x = "") +
+  # scale_linetype_manual( values = c("solid", "dashed")) +
+  geom_text(vjust = -.75, hjust = 1, size = 3) +
+  scale_linetype_discrete("Mixture component", labels = greeks) +
+  theme(panel.grid = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.justification = "left",
+        legend.position = "none",
+        legend.background = element_rect(fill = "transparent", colour = "transparent")) -> p_2
+
+grid.arrange(p_1,p_2, ncol=1, heights=c(4, 2))
+
+
+```
+
+
+Figure \ref{fig:comps} shows that there are consistent differences between inter-keystroke intervals across the majority of copy-task components. The magnitude of the difference and its variability differs. There is a small but consistent difference between the Sentence and HF bigram task. The differences between the Consonant task and the Tapping, HF bigrams, and Sentence task have a large magnitude. Differences between the LF bigram task and the Tapping, Sentence, and HF bigram task are consistently above zero but variable in its magnitude. The differences between the Tapping task and HF bigrams and the Sentence component are small, show little variability but show some proportional of differences in the opposite direction. The inconsistent difference between the LF bigram task and the Consonants component observed in the linear mixed effects model disappear in the mixture model analysis. Large component differences in the mixing proportion $\hat\theta_2$ can be seen for comparisons that involve the Consonant task. The consonant task exhibits a larger mixing proportion $\hat\theta_2$ compared to the remaining copy-task components.
+
+
+## Individual variance
+
+Linear mixed effects models allow us to estimate varying intercepts for each participants. The parameter estimates for each individual can be used to identify those individuals that are relatively fast or slow typists compared to the reminder of the sample. In other words, we can use this tool to test the typing performance and isolate individuals that vary from the remainder of the sample. Figure \ref{fig:inddiff} shows a caterpillar plot for the deviation estimates for each participants. 
+
+
+```{r warning = FALSE,  fig.pos="!h", fig.width=6.5, fig.height=4, fig.align = "center", fig.cap="\\label{fig:inddiff}Participant deviation from the model intercept. Each errorbar represents the 95\\% HPDI for one participant. Participants with large deviations (MAP $>$ 3 $\\times$ SD) were labelled with their participant ID."}
+
+readRDS(file="../stanout/RE/MoGK2_re.rda") %>% 
+  gather(Parameter, value) %>%
+  separate(Parameter, into =c("Parameter", "id"), sep = "\\[") %>%
+  mutate(id = gsub(pattern = "\\]", replacement = "", id)) %>%
+  filter(Parameter == "u") %>%
+  select(-Parameter) %>%
+  group_by(id) %>%
+  dplyr::summarise_all(list(map = dmode, 
+                     l.hpdi = ~HPDI(., prob = .95)[1], 
+                     u.hpdi = ~HPDI(., prob = .95)[2])) %>%
+  ungroup() -> ppts_re
+  
+sigma_sd <- readRDS(file="../stanout/RE/MoGK2_re.rda") %>% 
+  gather(Parameter, value) %>% summarise(sd = sd(value))
+
+ppts_re %>% mutate(rank = rank(map)) %>%
+  mutate(id = factor(id, levels = id[rank], ordered = T)) %>%
+  mutate(lab = ifelse(map < -3*sigma_sd$sd, id,
+                      ifelse(map > 3*sigma_sd$sd, id, ""))) %>%
+  ggplot(aes(y=map, x = rank,
+             ymin = l.hpdi, 
+             ymax = u.hpdi, 
+             label = lab)) +
+#  geom_point(size = .5) +
+  geom_errorbar(width = 0, size = .25) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey10") +
+  theme_minimal() +
+  labs(x = "Participant ID", y = "Participant deviation with 95% HPDIs") +
+  theme(axis.text.x = element_blank()) +
+  geom_text(hjust = .25, vjust = -.5, size = 3) +
+  scale_y_continuous(breaks = seq(-2, 2, .5))
+
+```
+
+For each participant we plotted the 95% HPDI interval showing the deviation from the overall intercept marked by the dashed line intercepting at zero. As the distribution of these deviations is normal, it allows us to identify those individuals that are relatively slow or fast. In Figure \ref{fig:inddiff} relatively fast individuals are shown on the left side and relatively slow individuals are shown on the right. Those HPDIs that did not fall into the normal distribution of those deviations were labelled with the participants' ID. For example, the slowest typist in the sample shown were participants 236 and 437.
+
+
+```{r}
+d.full %>% 
+  filter(IKI > 0, 
+         target == 1,
+         !is.na(IKI)
+  ) %>%
+  group_by( subj, bigram, component, age ) %>%
+  dplyr::summarise(IKI = mean(IKI),
+                   N = n()) %>%
+  ungroup() %>%
+  filter(age >= 60) %>%
+  mutate(subjNEW = as.integer(factor(subj))) -> d.age
+
+d.age$component <- d.age %$% factor(component, levels = c("Tapping", "Sentence",  "HF", "LF", "Consonants"), ordered = TRUE)
+
+readRDS("../stanout/RE/LMMageslopes_re.rda") %>%
+  gather(Parameter, value) %>%
+  separate(Parameter, into=c("Parameter", "id"), sep = "\\[") %>%
+  filter(Parameter == "u") %>%
+  separate(id, into = c("id", "Component"), sep = "[,]") %>%
+  mutate(Component = gsub(pattern="\\]", replacement = "", Component),
+         id = as.integer(id)) %>%
+  select(-Parameter) -> ppt_samps
+  
+tmp <- d.age[,c("age", "subjNEW")]
+tmp %<>% unique() %>% mutate(age = ifelse(subjNEW == 64, max(age), age))
+ppt_samps <- left_join(ppt_samps, tmp , by = c("id" = "subjNEW"))
+
+d.full %>% 
+  filter(IKI > 0, 
+         target == 1,
+         !is.na(IKI)
+  ) %>%
+  select(age, sex, subj) %>%
+  filter(age >= 60) %>%
+  select(-age) %>%
+  unique() %>% count(sex) -> d.sex
+
+
+
+```
+
+The same logic can be applied to isolate individuals with difficulty in certain copy-task components. This can be used to identify individuals with specific difficulty on the motor level (Tapping), in lexical typing tasks (HF/LF bigrams, Sentence task), or tasks that involve eye-hand coordination and a memory component (Consonant task). To illustrate how we can use the copy-task as a diagnostic tool we focused on a group that typically shows more difficulty. We selected the 2.5% oldest participants in the copy-task corpus (\textit{N}=`r printnum(length(unique(d.age$subjNEW)))`, `r printnum(d.sex[d.sex$sex == "m",]$n)` males,  `r printnum(d.sex[d.sex$sex == "f",]$n)` females;   median age = `r printnum(as.integer(median(tmp$age)))` years, range: `r printnum(min(tmp$age))`, `r printnum(max(tmp$age))`). We fitted a Bayesian linear mixed effects model as described before with intercept as fixed effect and random intercepts for bigrams and participants with by-participants slopes for copy-task component. The results of this model can be found in Figure \ref{fig:agediff}. Figure \ref{fig:agediff} shows the typing deviation from the overall intercept (shown as dashed line) for each participant plotted against age. Those individuals that showed a relatively slow performance were labelled with their participant ID.
+
+
+```{r warning = FALSE, fig.pos="!h", fig.width=6.7, fig.height=4, fig.align = "center", fig.cap="\\label{fig:agediff}Participant deviation from the overall intercept with 95\\% HPDIs. Age is shown on the x-axis and indicate as colour (i.e. darker colour indicates higher age). For each component, participant IDs are shown for individuals that show slower responses compared to the remainder of the sample (MAP $>$ 3 $\\times$ SD)."}
+
+sigma_sd <- readRDS("../stanout/RE/LMMageslopes_re.rda") %>%
+  gather(Parameter, value) %>% summarise(sd = sd(value))
+
+ppt_samps %>% 
+  group_by(id,age,Component) %>%
+  dplyr::summarise_all(list(map = dmode, 
+                     l.hpdi = ~HPDI(., prob = .95)[1], 
+                     u.hpdi = ~HPDI(., prob = .95)[2])) %>%
+  ungroup() %>%
+  mutate(rank = rank(age)) %>%
+  #mutate(id = factor(id, levels = id[rank], ordered = T)) %>%
+  mutate(lab = ifelse(map > sigma_sd$sd, id, "")) %>%
+  mutate(Component = mapvalues(Component, from = 1:5, to = ctc),
+         Component = factor(Component, levels = ctc, ordered = T)) %>%
+  ggplot(aes(y=map, 
+             x = age,
+             ymin = l.hpdi, 
+             ymax = u.hpdi, 
+             color = age,
+             label = lab
+             )) +
+  geom_point(size = .5) +
+  geom_errorbar(width = 0, size = .25) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey10") +
+  theme_linedraw() +
+  facet_wrap(~Component) +
+  labs(x = "Age in years", y = "Participant deviation with 95% HPDIs") +
+  geom_text(hjust = .25, vjust = -.5, size = 3) +
+  scale_y_continuous(breaks = seq(-2, 2, .5)) +
+  scale_color_viridis(option = "E", alpha = .9, begin = .1, end = .9, direction = -1) +
+  theme(legend.position = "none",
+        panel.grid = element_blank())
+
+```
+
+Figure \ref{fig:agediff} illustrates that participant 74 shows more difficulty in most copy-task components, except the Tapping task. In contrast, participants 10, 18, and 36 show difficulty in the Tapping task but in none of the other copy-task components. Participants 14 shows difficulty in the Sentence and HF bigrams task only. Participant 6 shows difficulty in the LF bigrams and Consonant task. Participant 8 shows difficulty across all copy-task components. In other words, we can detect participants that have difficulty related to the properties of certain copy-task components.
+
+
+## Test-retest reliability
+
+```{r}
+# Load df
+d.full %>% 
+  dplyr::filter(IKI > 0 
+                ,!is.na(IKI)
+                ,target == 1
+  ) %>%
+  mutate(subj = as.numeric(factor(subj))) %>%
+  group_by( subj, bigram, component, session ) %>%
+  dplyr::summarise(IKI = mean(IKI),
+                   N = n()) %>%
+  ungroup() %>%
+  mutate(component = factor(component, levels = c("Tapping", "Sentence", "HF", "LF", "Consonants"), ordered = TRUE)) -> d.sess
+
+d.sess %>% dplyr::select(subj, session) %>% unique() %>% dplyr::count(subj) %>% arrange(desc(n)) %>% filter(n > 1) -> keep.subj
+
+d.sess %>% 
+  filter(subj %in% keep.subj$subj) %>%
+  mutate(session = as.integer(factor(session)),
+         subj = as.integer(factor(subj))) %>%
+  filter(session %in% 1:2) %>%
+  mutate(session = session -1) -> d.sess2
+
+
+d.full %>% 
+  dplyr::filter(IKI > 0 
+                ,!is.na(IKI)
+                ,target == 1
+  ) %>%
+  select( subj, sex, age, session ) %>% unique() %>% filter(subj %in% keep.subj$subj) %>% 
+  mutate(session = as.integer(factor(session)),
+         subj = as.integer(factor(subj))) %>%
+  filter(session %in% 1:2) %>%
+  mutate(session = session -1) %>%
+  group_by(subj,sex) %>%
+  summarise(age = min(age)) %>%
+  ungroup() %>%
+  summarise(N = n(),
+            M.age = median(age),
+            iqr = IQR(age),
+            min = min(age),
+            max = max(age),
+            N.f = length(which(sex == "f")),
+            N.m = length(which(sex == "m"))
+            ) -> SESS
+
+```
+
+
+Stability of the measures was assessed in a test-retest design: `r printnum(SESS$N)` participants completed the copy task twice with a time lag interval of at least one week (`r printnum(SESS$N.f)` males,  `r printnum(SESS$N.m)` females; median age = `r printnum(SESS$M.age)` years, range: `r printnum(SESS$min)`, `r printnum(SESS$max)`). 
+
+```{r}
+readRDS(file="../stanout/posterior/LMMsession_posterior.rda") %>% 
+  gather(Parameter, value) %>% 
+  filter(Parameter %in% c(paste0("delta[",1:5,"]"),
+                            paste0("beta[",1:5,"]"))) %>%
+  separate(Parameter, into = c("Parameter", "Component"), sep = "\\[") %>%
+  mutate(Component = gsub(pattern = "]", replacement = "", Component)) %>%
+  group_by(Parameter) %>%
+  mutate(id = 1:n()) %>%
+  spread(Parameter, value) %>%
+  mutate(SessEff = exp(beta + delta) - exp(beta)) %>%
+  select(-id:-delta) %>%
+  group_by(Component) %>%
+  dplyr::summarise_all(list(map = dmode, 
+                     l.hpdi = ~HPDI(., prob = .95)[1], 
+                     u.hpdi = ~HPDI(., prob = .95)[2])) %>%
+  ungroup() -> session.effect
+
+sess.tap <- session.effect[session.effect$Component == 1,]
+sess.sen <- session.effect[session.effect$Component == 2,]
+sess.hf <- session.effect[session.effect$Component == 3,]
+sess.lf <- session.effect[session.effect$Component == 4,]
+sess.cons <- session.effect[session.effect$Component == 5,]
+
+```
+
+
+We used a Bayesian linear mixed effects model, specified as previously described, to evaluate the whether participants were faster during the completion of the second session. We added the coefficient $\delta$ to the model to capture the changes in inter-keystroke intervals in the second session. The estimate for the anticipated speed-up effect was obtained for each copy-task component separately. 
+
+We found speed-up effects of $\hat\delta$ = `r printnum(sess.tap$map)` msecs for the Tapping component (95% HPDI: `r printnum(sess.tap$l.hpdi)`, `r printnum(sess.tap$u.hpdi)`), $\hat\delta$ = `r printnum(sess.lf$map)` msecs (95% HPDI: `r printnum(sess.lf$l.hpdi)`, `r printnum(sess.lf$u.hpdi)`) for LF bigrams and for the Consonant task $\hat\delta$ = `r printnum(sess.cons$map)` msecs (95% HPDI: `r printnum(sess.cons$l.hpdi)`, `r printnum(sess.cons$u.hpdi)`). The speed-up effect for the Sentence task ($\hat\delta$ = `r printnum(sess.sen$map)` msecs; 95% HPDI: `r printnum(sess.sen$l.hpdi)`, `r printnum(sess.sen$u.hpdi)`) and HF bigrams ($\hat\delta$ = `r printnum(sess.hf$map)` msecs; 95% HPDI: `r printnum(sess.hf$l.hpdi)`, `r printnum(sess.hf$u.hpdi)`) has a small magnitude and the HPDIs include 0 as possible parameter value. For the other components, the speed-up effect is systematic and has a very small magnitude.
+
+These differences are too small to suggest a strategic change in participants' responses but seems to relate to task familiarity. This is illustrated in Figure \ref{fig:retestgroup}. Although there is a systematic speed-up in some copy-task components, the effect does not change the overall pattern of the copy-task components.
+
+```{r warning = FALSE, fig.pos="!h", fig.width=6.5, fig.height=3.5, fig.align = "center", fig.cap="\\label{fig:retestgroup}Statistically inferred parameter values $\\hat{\\mu}$ for each session shown by copy-task component. Dots indicate the most probable parameter value and errorbars show 95\\% HPDIs."}
+readRDS(file="../stanout/posterior/LMMsession_posterior.rda") %>% 
+  gather(Parameter, value) %>% 
+  filter(Parameter %in% c(paste0("delta[",1:5,"]"),
+                            paste0("beta[",1:5,"]"))) %>%
+  separate(Parameter, into = c("Parameter", "Component"), sep = "\\[") %>%
+  mutate(Component = gsub(pattern = "]", replacement = "", Component)) %>%
+  group_by(Parameter) %>%
+  mutate(id = 1:n()) %>%
+  spread(Parameter, value) %>%
+  mutate(`Session 1` = exp(beta)) %>%
+  mutate(`Session 2` = exp(beta + delta)) %>%
+  select(-id:-delta) %>%
+  gather(Session, value, -Component) %>%
+  group_by(Component, Session) %>%
+  dplyr::summarise_all(list(map = dmode, 
+                     l.hpdi = ~HPDI(., prob = .95)[1], 
+                     u.hpdi = ~HPDI(., prob = .95)[2])) %>%
+  ungroup() %>%
+  mutate(Component = mapvalues(Component, from = 1:5, to = ctc)) %>%
+  mutate(Component = factor(Component, levels = rev(ctc), ordered = T)) %>%
+  ggplot(aes(y = map, x = Component, linetype = Session)) +
+  geom_errorbar(aes(ymin = l.hpdi, ymax = u.hpdi), width = 0, position = position_dodge(-.5)) +
+  geom_point(size = 2, position = position_dodge(-.5)) +
+  theme_minimal() +
+  coord_flip() +
+  labs(x = "", y =  bquote("Inferred IKIs"~hat(mu)~"in msecs with 95% HPDIs")) +
+  scale_linetype_manual("", values = c("solid", "dashed")) +
+#  ggtitle(paste0("N participants = ", subj_left)) +
+  theme(legend.key=element_blank(),
+        legend.position= "top", 
+        legend.justification = "right",
+        legend.background = element_rect(fill = "transparent", colour = "transparent")) 
+```
+
+These results confirm the reliability of the copy-task. For each of the copy-task components the general pattern observed in inter-keystroke intervals was reproduced in a second session in spite of a systematic but small typing advantage in the second session. This can be explained in terms of hesitations that might be related to accommodation to the novelty of the copy-task environment.
+
+
+# Summary
+
+In this analysis we showed how linear mixed effects models and an extension to mixture models can be used evaluate the distribution characteristics of each copy-task component and their respective differences. In particular, we showed that copy-typing is to some extent a mixture process involving more than one cognitive component. Further, we show how a random effects analysis of the copy-task data can be used as a diagnostic tool, to isolate individuals with specific difficulties. Lastly, we demonstrated the test-retest reliability of the copy-task showing that although there is a systematic speed-up effect for individuals performing in a second session of the copy-task, the difference does not affect the overall pattern across copy-task components.
+
+
+
+# References
+```{r create_r-references, echo=FALSE, include=FALSE}
+r_refs(file = "ref.bib")
+```
+
+\begingroup
+\setlength{\parindent}{-0.5in}
+\setlength{\leftskip}{0.5in}
+  
+<div id = "ref"></div>
+\endgroup
+  
+
+

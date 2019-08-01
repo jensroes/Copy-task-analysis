@@ -1,0 +1,273 @@
+```{r message=FALSE, echo=FALSE, warning=FALSE}
+# Load df
+d.full <- read_csv("../data/ct.csv") 
+d.aggr <- d.full %>% 
+  dplyr::filter(IKI > 0 
+                ,!is.na(IKI)
+                ,target == 1
+  ) %>%
+  mutate(subj = as.numeric(factor(subj))) %>%
+  group_by( subj, bigram, component ) %>%
+  dplyr::summarise(IKI = mean(IKI),
+                   N = n()) %>%
+  ungroup() %>%
+  mutate(component = factor(component, levels = c("Tapping", "Sentence", "HF", "LF", "Consonants"), ordered = TRUE))
+
+set.seed(123)
+d <- d.aggr %>% filter(subj %in% sample(1:max(subj), 500)) %>%
+  mutate(subj = as.numeric(factor(subj))) 
+
+```
+
+
+# Comparing Bayesian and Frequentist models
+
+Bayesian and Frequentist models have fundamentally different theoretical interpretations and therefore, implications for the interpretation of the coefficients provided by the statistical model. We will illustrate the differences between Bayesian and Frequentist model estimates in a linear mixed effects models analysis of the copy-task components. The model is fitted on the log-transformed inter-keystroke intervals with copy-task component as fixed effects and random intercepts for participants and bigrams. To evaluate the fit of this model, we fitted an intercept-only model without the fixed effect for copy-task component.
+
+```{r  message=FALSE, echo=FALSE, warning=FALSE}
+# Linear mixed model
+lmm0 <- lmer(log(IKI) ~ 1 + (1|subj) + (1|bigram), d, REML = FALSE)
+lmm <- lmer(log(IKI) ~ 0 + component + (1|subj) + (1|bigram), d, REML = FALSE)
+lmm_comp <- anova(lmm0, lmm)
+lmm_fit <- anova(lmm)
+
+#cis <- confint(lmm, method="boot")
+#cis %>% as.data.frame() %>%
+#  mutate(Parameter = rownames(.)) %>%
+#  as_tibble() %>%
+#  dplyr::rename(l.ci = `2.5 %`,
+#                u.ci = `97.5 %`) %>%
+#  select(Parameter, l.ci, u.ci) -> cis_df
+#write_csv(cis_df, "data/lmm_confint.csv")
+cis <- read_csv("../data/lmm_confint.csv")
+
+lmm_summary <- summary(lmm)$coef %>% 
+  as.data.frame() %>%
+  mutate(Parameter = rownames(.)) %>%
+  as_tibble() %>%
+  left_join(cis) %>%
+  mutate(Parameter = gsub(pattern = "component", "", Parameter)) %>%
+  dplyr::rename(SE = `Std. Error`,
+         t = `t value`) %>%
+  select(Parameter, Estimate, SE, l.ci, u.ci) %>%
+  group_by(Parameter) %>%
+  summarise_all(~round(exp(.),2)) %>%
+  mutate(Parameter = factor(Parameter, levels = c("Tapping", "Sentence", "HF", "LF", "Consonants"), ordered = T)) %>%
+  arrange(Parameter)
+   
+elpd_lmm <- read_csv("../stanout/loo_results_lmm.csv")
+
+```
+
+The linear mixed effects model fitted in lme4 showed a statistically significant fit ($F$(`r printnum(lmm_fit$Df)`)=`r printnum(round(lmm_fit$F,2))`, $p$ < .001; AIC = `r printnum(round(lmm_comp$AIC[2],2))`). The model with copy-task component as fixed effect rendered a better fit compared to the intercept-only model and was found more informative ($\chi^2_5$ = `r printnum(round(lmm_comp$Chisq[2],2))`, $\Delta$AIC = `r printnum(round(abs(diff(lmm_comp$AIC)),2))`).
+
+The Bayesian linear mixed effects model with copy-task component as fixed effect rendered a predictive performance of $\widehat{elpd}$=`r printnum(elpd_lmm$elpd_loo[1])` ($SE$=`r printnum(elpd_lmm$se_elpd_loo[1])`). The predictive performance was found to be better compared to the intercept-only model ($\Delta\widehat{elpd}$=`r printnum(elpd_lmm$elpd_diff[2])`, $SE$=`r printnum(round(elpd_lmm$se_elpd_diff[2],2))`). This model comparisons provides inference akin to the Frequentist linear mixed effects model.
+
+
+```{r}
+blmm <- readRDS("../stanout/posterior/LMM_posterior.rda")
+blmm_summary <- blmm %>% as_tibble() %>%
+  gather(Parameter, value) %>%
+  group_by(Parameter) %>%
+  dplyr::summarise(mean = mean(value),
+                   map = dmode(value),
+                   SE = sd(value),
+                   l.hpdi = HPDI(value, prob = .95)[1],
+                   u.hpdi = HPDI(value, prob = .95)[2]
+ #                  l.pi = PI(value, prob = .95 )[1]
+  #                 ,u.pi = PI(value, prob = .95)[2]
+                   ) %>%
+  mutate(mean = exp(mean),
+         map = exp(map),
+         SE = exp(SE),
+         l.hpdi = exp(l.hpdi),
+         u.hpdi = exp(u.hpdi)
+         #,l.pi = exp(l.pi)
+         #,u.pi = exp(u.pi)
+         ) %>%
+  filter(Parameter != "sigma")
+
+```
+
+The coefficients for each copy-task component estimated by the Frequentist and Bayesian linear mixed effects model are shown in Figure \ref{fig:lmms}. Estimates were determined by the Frequentist and Bayesian linear mixed effects model ([B]LMM). The estimate of Bayesian model is the maximum a posteriori, the most probable parameter estimate. The lower and upper bound are the 95% confidence intervals for the Frequentist model and the 95% highest posterior density interval (HPDI) for the Bayesian model. The parameter estimates and the associated intervals show a general difference between the Tapping task, the HF bigram component, and the Sentence task one the one hand, and the LF bigram component and the Consonant copying task on the other hand.
+
+
+```{r}
+# Compare model parameters
+blmm_summary$Parameter <- lmm_summary$Parameter
+blmm_summary$model <- "BLMM"
+lmm_summary$model <- "LMM"
+
+mc <- blmm_summary %>% select(-mean) %>%
+  dplyr::rename(Estimate = map,
+                l.ci = l.hpdi,
+                u.ci = u.hpdi) %>%
+  bind_rows(lmm_summary) %>%
+  group_by(Parameter, model) %>%
+  summarise_all(~round(.,2)) %>%
+  ungroup() %>%
+  mutate(Parameter = ifelse(Parameter == "LF", "LF bigrams", 
+                            ifelse(Parameter == "HF", "HF bigrams", as.character(Parameter))) )
+
+#mc %>% dplyr::rename(`Copy-task component` = Parameter,
+#                Model = model,
+#                `Lower bound` = l.ci,
+#                `Upper bound` = u.ci) %>%
+#  knitr::kable( align = c("l", "l", "r", "r", "r", "r") 
+#                , escape = F
+#                , booktabs = T
+#                , caption = "\\label{tab:lmms}Parameter estimates for each copy-task component. Estimates are shown as determined by the Frequentist and Bayesian linear mixed effects model ([B]LMM). The estimate of Bayesian model is the maximum a posteriori, the most probable parameter estimate. The lower and upper bound are the 95\\% confidennce intervals for the Frequentist model and the 95\\% highest posterior density interval for the Bayesian model."
+#                ) %>%
+#    kable_styling(full_width = T, font_size = 11)  %>%
+#  column_spec(1, width = "3cm") %>%
+#  column_spec(2:6, width = "2cm") %>%
+#  collapse_rows(columns = 1,valign = "middle",latex_hline = "none") 
+#%>%  footnote(general = "", footnote_as_chunk = T) 
+
+```
+
+```{r warning = FALSE, fig0, fig.pos="!h", fig.width=5.5, fig.height=3, fig.align = "center", fig.cap="\\label{fig:lmms}Model estimates of the inter-keystroke intervals (IKI) for each copy-task component estimated in a Bayesian and Frequentist linear mixed effects model ([B]LMM). Dots show the parameter estimate and intervals show 95\\% CIs for the LMM and 95\\% HPDIs for the BLMM."}
+mc %>% 
+  mutate(Parameter = factor(Parameter, levels = rev(ctc), ordered = T),
+         model = factor(model, levels = c("LMM", "BLMM"), ordered = T)) %>%
+  ggplot(aes(x=Parameter, linetype = model)) +
+  theme_minimal() +
+  geom_point(aes(y=Estimate), size = 2, position = position_dodge(-.5)) +
+  geom_errorbar(aes(ymin = l.ci, ymax = u.ci), width = 0, position = position_dodge(-.5), size = .5) +
+  labs(y = bquote("IKI in msecs"),
+       x = "") +
+  coord_flip() +
+  scale_linetype_manual("Model: ", values = c("dashed", "dotted") ) +
+  scale_y_continuous(breaks = seq(0,400,50)) +
+  theme(axis.title.y = element_text(angle = 0, hjust = 0),
+        panel.grid.minor = element_blank(),
+        axis.ticks.y = element_blank(),
+        legend.key.width = unit(1.5,"cm"),
+        legend.position = c(.85, .85),
+        legend.background = element_blank())
+```
+
+
+Overall, the coefficients are numerically very similar, if not identical. However, the interpretation is crucially different. The estimate of Bayesian model is the \textit{maximum a posteriori}. This coefficient represents the most probable parameter estimate of the unknown true effect. The Frequentist estimate has no such probability associated to it. Akin for the lower and upper interval bounds. The lower and upper bound for the Frequentist model are the 95% confidence intervals (CI). For the Bayesian model, the interval shows the 95% Highest Posterior Density Interval (HPDI). Although the intervals look very similar the interpretation is not the same at all. The HPDI is defined as the shortest interval containing 95% of the posterior probability mass and represents the area in which the largest amount of posterior estimates lie. Bayesian HPDIs, probability/percentile intervals and credible intervals all provide the probability range in which the true parameter value lies with the highest certainty. 95% CIs have a more involved definition and can be understood to represent the amount of intervals that would contain the true parameter value if we were to repeat an experiment a large number, if not infinite, number of times under the same conditions. Therefore, 95% CIs cannot be understood as an intervals that contains a true parameter value with a probability of 95%, whereas Bayesian posterior intervals do have this interpretation.
+
+```{r}
+tv <- blmm %>% as_tibble() %>%
+  gather(Parameter, value) %>%
+  filter(Parameter != "sigma") %>%
+   mutate(value = exp(value),
+         Parameter = mapvalues(Parameter, from = unique(Parameter), to = ctc)) %>%
+  group_by(Parameter) %>%
+  mutate(id = 1:n()) %>%
+  spread(Parameter, value) %>%
+  select(Tapping, Consonants) %>%
+  gather(Parameter, value) %>%
+  group_by(Parameter) %>%
+  dplyr::summarise(B100 = mean(value < 100),
+                   B80 = mean(value < 80),
+                   B50 = mean(value < 50),
+                   A350 = mean(value > 350)) %>%
+  group_by(Parameter) %>%
+  summarise_all(~round(.,3))
+```
+
+
+As Bayesian models provide probability distributions of parameter estimates, we can derive inference directly from the model's posterior. The distributions of the parameter estimates as shown in Figure \ref{fig:blmm}. From these distributions we can calculate the probability of observing keystroke-intervals below or above a particular threshold or within a particular range. For example, from the posterior shown in Figure \ref{fig:blmm} we can determine that in the Tapping task the probability of observing keystroke intervals below 100 msecs is `r printnum(tv[tv$Parameter == "Tapping",]$B100)`, below 80 msecs is `r printnum(tv[tv$Parameter == "Tapping",]$B80)` and below 50 msecs is 0. For the Consonants component, the probability of observing keystroke intervals for all of these thresholds is 0. In contrast, the probability to observe keystroke intervals above 350 msecs is `r printnum(tv[tv$Parameter == "Consonants",]$A350)` for the Consonants components but 0 in the Tapping task.
+
+
+
+```{r warning = FALSE, fig1, fig.pos="!h", fig.width=6.5, fig.height=4.5, fig.align = "center", fig.cap="\\label{fig:blmm}Histograms of the posterior probability distribution of inter-keystroke intervals (IKI) generated from the BLMM."}
+blmm %>% as_tibble() %>%
+  gather(Parameter, value, -sigma) %>%
+#  filter(Parameter != "sigma") %>%
+  mutate(value = exp(value),
+         Parameter = mapvalues(Parameter, from = unique(Parameter), to = ctc)) %>%
+  mutate(Parameter = factor(Parameter, levels = ctc, ordered = T)) -> blmm_plot
+
+blmm_plot %>%
+  ggplot(aes(x=value)) +
+  theme_linedraw() +
+#  geom_line() +
+  geom_histogram(aes(y = ..density..), binwidth=5) + #density(blmm_plot$value)$bw
+  geom_density(fill="red", alpha = 0.2) +
+#  geom_density(fill="red", alpha = 0.2) +
+#  geom_bar(aes(y= (..count..)/sum(..count..))) +
+#  geom_density(fill = "grey40",  alpha = .5) + #, bins = 20
+  facet_wrap(~Parameter, scales = "free_x", ncol = 3) + #
+  theme(#axis.text.y = element_blank(),
+        #axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid = element_blank()) +
+  labs(x = "IKI in msecs",
+       y = "Density")
+
+```
+
+The interpretive difference between Bayesian and Frequentist statistics rests on the property that statistical inference in Bayesian statistics uses (posterior) probability distributions. In other words, the derived model estimates are associated with a probability distribution. Frequentist quantities do not have this property and reply on assumed replications. Bayesian models, in contrast, allow us to test our hypotheses directly using the data at hand. 
+
+
+```{r}
+d.full %>%
+   dplyr::filter(IKI > 0 
+                ,!is.na(IKI)
+                ,target == 1
+                , component == "Consonants"
+  ) %>% 
+  dplyr::group_by(subj) %>%
+  dplyr::summarise(Q1 = quantile(IKI)[2],
+            Q3 = quantile(IKI)[4]) %>%
+  dplyr::ungroup() %>%
+  dplyr::summarise(Q1 = mean(Q1),
+          Q3 = mean(Q3),
+          th = ((Q3 - Q1)*2.2) + Q3 
+          ) -> upper.th
+```
+
+
+# Data trimming
+
+Extremely deviating interkey intervals that are often considered as noise were not removed for the following reasons. A bottom threshold defined at 30 msecs which has been argued to indicate unintentional double strokes or continuous key pressing does not apply as non-targeted bigrams were removed. As can be seen in the left panel of Figure \ref{fig:outliers} any other threshold on the lower end would need to be arbitrary and is difficult to be justified by the data. As for an upper threshold, following @hoaglin1987fine, we may consider `r printnum(as.integer(upper.th$th))` msecs.^[ @hoaglin1987fine defined outliers based on the differences between quartile 3 (Q3) and quartile 1 (Q1) means. This interval is multiplied by factor 2.2. The upper threshold for outliers is then calculated by adding this score to Q3. We applied this formula to the slowest component, i.e. the consonant task. This resulted in the following calculation: ((Q3 $-$ Q1) $\times$ 2.2) $+$ Q3 $=$ ((`r printnum(upper.th[,"Q3"])` $-$ `r printnum(upper.th$Q1)`) $\times$ 2.2) + `r printnum(upper.th$Q3)` $=$ `r printnum(upper.th$th)` ] 
+
+The right panel of Figure \ref{fig:outliers} illustrates the distribution of data above the determined threshold. This proposal, however, hinges on the assumtion that the data follow a normal distribution which we know is not the case in human response time data. Data are positively skewed which results from the fact that response time data are zero bound [@baa08book]. In other words, inter-keystroke intervals can be infinitely slow but not faster than or equal to 0 msecs. More generally, trimming on the upper end would affect in particular the data of participants that are slow typists (e.g. many elderly participants) and those copy-task components that are more challenging (e.g. the consonant task) but extreme values in faster components, such as the tapping task, or in usually fast typists would be disregarded. Therefore, instead of removing values that might be considered extreme, we used statistical methods that are able capable of accounting for large values.
+
+```{r warning = FALSE, fig0a, fig.pos="!h", fig.width=6, fig.height=3, fig.align = "center", fig.cap="\\label{fig:outliers}Distribution of inter-keystroke intervals shown on the lower (left panel) and upper (right panel) extreme. Graphs show the density distribution of the data in the top panel and the jittered individual data points on the lower panel." }
+minIKI <- 30
+midIKI <- as.integer(round(upper.th$th))
+
+d.full %>%
+  dplyr::filter(IKI > 0 
+                ,!is.na(IKI)
+                ,target == 1
+  ) %>%
+  filter(IKI <= minIKI | IKI >= midIKI) %>%
+  mutate(Extr = ifelse(IKI <= minIKI, paste0("IKIs \u2264", minIKI," msecs"),
+                        ifelse(IKI >= midIKI, paste0("IKIs \u2265", midIKI, " msecs"), NA))) -> outlier.plot
+
+outlier.plot %>%
+  ggplot(aes(x=IKI, y =1)) +
+  geom_jitter(size =.01, alpha =.25) +
+  facet_wrap(~Extr, scales = "free" ) +
+  theme_linedraw() +
+  xlab("IKI in msecs") +
+  theme(strip.text = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank(),
+        panel.grid = element_blank()) -> p_1
+
+
+outlier.plot %>%
+  ggplot(aes(x=IKI)) +
+  geom_density(size = .15, fill = "darkred", alpha = .25) +
+  facet_wrap(~Extr, scales = "free" ) +
+  theme_linedraw() +
+  labs(x = "",
+       y = "Density") +
+  theme(strip.text = element_text(face = "bold"),
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank()) -> p_2
+
+grid.arrange(p_2,p_1)
+
+```
